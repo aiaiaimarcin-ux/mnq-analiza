@@ -7,6 +7,7 @@ import pytz
 import os
 import math
 
+# Import funkcji obliczeniowej (nazwa pliku bez .py)
 from analysis_ib_double_breakout import analyze_ib_double_breakout, calculate_streaks
 
 st.set_page_config(layout="wide", page_title="MNQ IB Advanced")
@@ -16,7 +17,8 @@ if 'res' not in st.session_state: st.session_state['res'] = None
 if 'df_all' not in st.session_state: st.session_state['df_all'] = None
 if 'date_idx' not in st.session_state: st.session_state['date_idx'] = 0
 
-DATA_FILENAME = "data.txt"
+# --- WAŻNE: Tu ustawiamy nowy format pliku ---
+DATA_FILENAME = "data.parquet"
 
 def _local_to_utc(date_obj, time_obj):
     tz = pytz.timezone("America/New_York")
@@ -25,10 +27,8 @@ def _local_to_utc(date_obj, time_obj):
     except: return tz.localize(dt_naive, is_dst=False).astimezone(pytz.UTC)
 
 def format_minutes(m):
-    # Sprawdzenie czy m to None, albo czy jest NaN (Not a Number)
     if m is None: return "-"
     if isinstance(m, float) and math.isnan(m): return "-"
-    
     try:
         val = float(m)
         h = int(val // 60)
@@ -40,18 +40,55 @@ def format_minutes(m):
 @st.cache_resource
 def load_data(filepath):
     if not os.path.exists(filepath): return None
-    try: return pl.read_csv(filepath, has_header=False)
+    try:
+        # Wczytywanie PARQUET
+        return pl.read_parquet(filepath)
     except Exception as e: return str(e)
 
+# Próba wczytania danych
 df_raw = load_data(DATA_FILENAME)
 
-if df_raw is None:
-    st.error(f"⚠️ Brak pliku {DATA_FILENAME}")
-else:
+# --- PANEL BOCZNY I START ---
+if df_raw is None or isinstance(df_raw, str):
+    st.warning(f"⚠️ Nie znaleziono pliku '{DATA_FILENAME}' w repozytorium.")
+    st.info("Sprawdź czy plik 'data.parquet' na pewno jest na GitHubie.")
+    
+    # Opcja awaryjna: Upload ręczny
+    uploaded_file = st.sidebar.file_uploader("📂 Wgraj plik ręcznie (data.parquet)", type=['parquet'])
+    if uploaded_file is not None:
+        try:
+            df_raw = pl.read_parquet(uploaded_file)
+            st.sidebar.success("✅ Plik wczytany pomyślnie!")
+        except Exception as e:
+            st.sidebar.error(f"Błąd pliku: {e}")
+
+# Jeśli udało się wczytać dane
+if df_raw is not None and isinstance(df_raw, pl.DataFrame):
     with st.sidebar:
         st.header("⚙️ Ustawienia")
         col_d1, col_d2 = st.columns(2)
-        start_d, end_d = col_d1.date_input("Od", date(2024, 1, 1)), col_d2.date_input("Do", date.today())
+        
+        # Próba ustalenia zakresu dat z danych
+        try:
+            # Zakładamy, że timestamp jest w kolumnie 0
+            ts_col = df_raw.columns[0]
+            # Szybkie sprawdzenie zakresu (może być uproszczone dla wydajności)
+            min_ts = df_raw.select(pl.col(ts_col).min()).item()
+            max_ts = df_raw.select(pl.col(ts_col).max()).item()
+            
+            # Konwersja na date
+            if isinstance(min_ts, str):
+                 d_start_def = datetime.strptime(min_ts[:8], "%Y%m%d").date()
+                 d_end_def = datetime.strptime(max_ts[:8], "%Y%m%d").date()
+            else:
+                 # Jeśli to już datetime
+                 d_start_def = min_ts.date()
+                 d_end_def = max_ts.date()
+        except:
+            d_start_def = date(2024, 1, 1)
+            d_end_def = date.today()
+
+        start_d, end_d = col_d1.date_input("Od", d_start_def), col_d2.date_input("Do", d_end_def)
         ib_s, ib_e = st.time_input("Start IB", time(1, 0)), st.time_input("Koniec IB", time(2, 0))
         dead = st.time_input("Deadline", time(17, 0))
         is_ov = st.checkbox("Overnight", value=(ib_s > ib_e))
@@ -89,47 +126,50 @@ else:
         st.subheader("🔍 Przegląd Sesji")
         available_dates = sorted(res["date"].unique(), reverse=True)
         
-        col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
-        with col_nav1:
-            if st.button("⬅️ Dzień Wcześniej") and st.session_state['date_idx'] < len(available_dates) - 1:
-                st.session_state['date_idx'] += 1
-        with col_nav3:
-            if st.button("Dzień Później ➡️") and st.session_state['date_idx'] > 0:
-                st.session_state['date_idx'] -= 1
-        with col_nav2:
-            current_date = available_dates[st.session_state['date_idx']]
-            st.markdown(f"<h3 style='text-align: center;'>{current_date}</h3>", unsafe_allow_html=True)
+        if not available_dates:
+             st.warning("Brak transakcji w wybranym okresie.")
+        else:
+            col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
+            with col_nav1:
+                if st.button("⬅️ Dzień Wcześniej") and st.session_state['date_idx'] < len(available_dates) - 1:
+                    st.session_state['date_idx'] += 1
+            with col_nav3:
+                if st.button("Dzień Później ➡️") and st.session_state['date_idx'] > 0:
+                    st.session_state['date_idx'] -= 1
+            with col_nav2:
+                current_date = available_dates[st.session_state['date_idx']]
+                st.markdown(f"<h3 style='text-align: center;'>{current_date}</h3>", unsafe_allow_html=True)
 
-        row = res.filter(pl.col("date") == current_date).row(0, named=True)
-        ny_tz = pytz.timezone("America/New_York")
-        
-        pdf = df_all.filter((pl.col("ts_utc") >= row["ib_start_utc"] - timedelta(minutes=60)) & 
-                          (pl.col("ts_utc") <= _local_to_utc(current_date, dead) + timedelta(minutes=30))).to_pandas()
-        
-        if not pdf.empty:
-            plt.style.use('dark_background')
-            fig_p, ax_p = plt.subplots(figsize=(10, 4))
-            fig_p.patch.set_facecolor("#0e1117")
-            ax_p.plot(pdf["ts_ny"].dt.to_pydatetime(), pdf["close"], color="white", lw=1.2, label="Cena")
+            row = res.filter(pl.col("date") == current_date).row(0, named=True)
+            ny_tz = pytz.timezone("America/New_York")
             
-            # Linie IB
-            ax_p.axhline(row["ib_high"], color="#4CAF50", ls="--", alpha=0.7, label="IB High")
-            ax_p.axhline(row["ib_low"], color="#FF5252", ls="--", alpha=0.7, label="IB Low")
+            pdf = df_all.filter((pl.col("ts_utc") >= row["ib_start_utc"] - timedelta(minutes=60)) & 
+                              (pl.col("ts_utc") <= _local_to_utc(current_date, dead) + timedelta(minutes=30))).to_pandas()
+            
+            if not pdf.empty:
+                plt.style.use('dark_background')
+                fig_p, ax_p = plt.subplots(figsize=(10, 4))
+                fig_p.patch.set_facecolor("#0e1117")
+                ax_p.plot(pdf["ts_ny"].dt.to_pydatetime(), pdf["close"], color="white", lw=1.2, label="Cena")
+                
+                # Linie IB
+                ax_p.axhline(row["ib_high"], color="#4CAF50", ls="--", alpha=0.7, label="IB High")
+                ax_p.axhline(row["ib_low"], color="#FF5252", ls="--", alpha=0.7, label="IB Low")
 
-            # Linie rozszerzeń (Extensions) 1x, 2x, 3x IB
-            rng = row["ib_range"]
-            for mult in [1, 2, 3]:
-                ax_p.axhline(row["ib_high"] + (rng * mult), color="#606060", ls=":", lw=0.8, alpha=0.5)
-                ax_p.axhline(row["ib_low"] - (rng * mult), color="#606060", ls=":", lw=0.8, alpha=0.5)
-            
-            # Jaśniejszy prostokąt IB (#4fc3f7 - Light Blue)
-            ib_s_ny = row["ib_start_utc"].astimezone(ny_tz)
-            ib_e_ny = row["ib_end_utc"].astimezone(ny_tz)
-            ax_p.axvspan(ib_s_ny, ib_e_ny, color='#4fc3f7', alpha=0.25, label="Strefa IB")
-            
-            ax_p.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M', tz=ny_tz))
-            ax_p.legend(fontsize=8, loc='upper left')
-            st.pyplot(fig_p)
+                # Linie rozszerzeń (Extensions) 1x, 2x, 3x IB
+                rng = row["ib_range"]
+                for mult in [1, 2, 3]:
+                    ax_p.axhline(row["ib_high"] + (rng * mult), color="#606060", ls=":", lw=0.8, alpha=0.5)
+                    ax_p.axhline(row["ib_low"] - (rng * mult), color="#606060", ls=":", lw=0.8, alpha=0.5)
+                
+                # Jaśniejszy prostokąt IB (#4fc3f7 - Light Blue)
+                ib_s_ny = row["ib_start_utc"].astimezone(ny_tz)
+                ib_e_ny = row["ib_end_utc"].astimezone(ny_tz)
+                ax_p.axvspan(ib_s_ny, ib_e_ny, color='#4fc3f7', alpha=0.25, label="Strefa IB")
+                
+                ax_p.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M', tz=ny_tz))
+                ax_p.legend(fontsize=8, loc='upper left')
+                st.pyplot(fig_p)
 
         # WYKRESY KOŁOWE
         st.divider()
