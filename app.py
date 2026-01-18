@@ -10,6 +10,16 @@ import math
 # Import funkcji obliczeniowej (nazwa pliku bez .py)
 from analysis_ib_double_breakout import analyze_ib_double_breakout, calculate_streaks
 
+# --- KONFIGURACJA WYGLĄDU WYKRESÓW ---
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = ['Segoe UI', 'Helvetica', 'Arial', 'DejaVu Sans']
+plt.rcParams['font.size'] = 8
+plt.rcParams['axes.titlesize'] = 10
+plt.rcParams['axes.labelcolor'] = 'white'
+plt.rcParams['text.color'] = 'white'
+plt.rcParams['xtick.color'] = 'white'
+plt.rcParams['ytick.color'] = 'white'
+
 st.set_page_config(layout="wide", page_title="MNQ IB Advanced")
 st.title("🎯 MNQ – IB Multi-Strategy (Advanced Analytics)")
 
@@ -17,8 +27,16 @@ if 'res' not in st.session_state: st.session_state['res'] = None
 if 'df_all' not in st.session_state: st.session_state['df_all'] = None
 if 'date_idx' not in st.session_state: st.session_state['date_idx'] = 0
 
-# --- WAŻNE: Tu ustawiamy nowy format pliku ---
+# --- SZUKANIE PLIKU (AUTO-SEARCH) ---
 DATA_FILENAME = "data.parquet"
+import os
+# Jeśli nie ma pliku w głównym folderze, szukamy w podfolderach (dla GitHub)
+if not os.path.exists(DATA_FILENAME):
+    for root, dirs, files in os.walk("."):
+        if "data.parquet" in files:
+            DATA_FILENAME = os.path.join(root, "data.parquet")
+            break
+# ------------------------------------
 
 def _local_to_utc(date_obj, time_obj):
     tz = pytz.timezone("America/New_York")
@@ -41,7 +59,6 @@ def format_minutes(m):
 def load_data(filepath):
     if not os.path.exists(filepath): return None
     try:
-        # Wczytywanie PARQUET
         return pl.read_parquet(filepath)
     except Exception as e: return str(e)
 
@@ -50,8 +67,7 @@ df_raw = load_data(DATA_FILENAME)
 
 # --- PANEL BOCZNY I START ---
 if df_raw is None or isinstance(df_raw, str):
-    st.warning(f"⚠️ Nie znaleziono pliku '{DATA_FILENAME}' w repozytorium.")
-    st.info("Sprawdź czy plik 'data.parquet' na pewno jest na GitHubie.")
+    st.warning(f"⚠️ Nie znaleziono pliku data.parquet (szukano w: {DATA_FILENAME})")
     
     # Opcja awaryjna: Upload ręczny
     uploaded_file = st.sidebar.file_uploader("📂 Wgraj plik ręcznie (data.parquet)", type=['parquet'])
@@ -68,20 +84,14 @@ if df_raw is not None and isinstance(df_raw, pl.DataFrame):
         st.header("⚙️ Ustawienia")
         col_d1, col_d2 = st.columns(2)
         
-        # Próba ustalenia zakresu dat z danych
         try:
-            # Zakładamy, że timestamp jest w kolumnie 0
             ts_col = df_raw.columns[0]
-            # Szybkie sprawdzenie zakresu (może być uproszczone dla wydajności)
             min_ts = df_raw.select(pl.col(ts_col).min()).item()
             max_ts = df_raw.select(pl.col(ts_col).max()).item()
-            
-            # Konwersja na date
             if isinstance(min_ts, str):
                  d_start_def = datetime.strptime(min_ts[:8], "%Y%m%d").date()
                  d_end_def = datetime.strptime(max_ts[:8], "%Y%m%d").date()
             else:
-                 # Jeśli to już datetime
                  d_start_def = min_ts.date()
                  d_end_def = max_ts.date()
         except:
@@ -122,7 +132,7 @@ if df_raw is not None and isinstance(df_raw, pl.DataFrame):
 
         st.divider()
 
-        # NAWIGACJA STRZAŁKAMI NA WYKRESIE
+        # NAWIGACJA
         st.subheader("🔍 Przegląd Sesji")
         available_dates = sorted(res["date"].unique(), reverse=True)
         
@@ -156,13 +166,13 @@ if df_raw is not None and isinstance(df_raw, pl.DataFrame):
                 ax_p.axhline(row["ib_high"], color="#4CAF50", ls="--", alpha=0.7, label="IB High")
                 ax_p.axhline(row["ib_low"], color="#FF5252", ls="--", alpha=0.7, label="IB Low")
 
-                # Linie rozszerzeń (Extensions) 1x, 2x, 3x IB
+                # Linie rozszerzeń
                 rng = row["ib_range"]
                 for mult in [1, 2, 3]:
                     ax_p.axhline(row["ib_high"] + (rng * mult), color="#606060", ls=":", lw=0.8, alpha=0.5)
                     ax_p.axhline(row["ib_low"] - (rng * mult), color="#606060", ls=":", lw=0.8, alpha=0.5)
                 
-                # Jaśniejszy prostokąt IB (#4fc3f7 - Light Blue)
+                # Prostokąt IB
                 ib_s_ny = row["ib_start_utc"].astimezone(ny_tz)
                 ib_e_ny = row["ib_end_utc"].astimezone(ny_tz)
                 ax_p.axvspan(ib_s_ny, ib_e_ny, color='#4fc3f7', alpha=0.25, label="Strefa IB")
@@ -171,20 +181,34 @@ if df_raw is not None and isinstance(df_raw, pl.DataFrame):
                 ax_p.legend(fontsize=8, loc='upper left')
                 st.pyplot(fig_p)
 
-        # WYKRESY KOŁOWE
+        # WYKRESY KOŁOWE (ZPOPRAWIONE FORMATOWANIE)
         st.divider()
         st.subheader("🥧 Skuteczność i Rozkład Czasu")
         sel_strat = st.selectbox("Wybierz strategię do wykresów i tabeli:", ["Double Breakout", "50% Retr.", "Return Line"])
         k_key = {"Double Breakout": "dbl", "50% Retr.": "mid", "Return Line": "line"}[sel_strat]
         
         c_pie1, c_pie2 = st.columns(2)
+        
+        # Funkcja do ukrywania małych procentów
+        def clean_autopct(pct):
+            return f'{pct:.1f}%' if pct > 3 else ''
+
         with c_pie1:
             win_c = res.filter(pl.col(f"ret_{k_key}")).height
             loss_c = res.height - win_c
-            fig1, ax1 = plt.subplots(figsize=(3, 3))
+            # Zwiększony figsize i dpi dla ostrości
+            fig1, ax1 = plt.subplots(figsize=(4, 4), dpi=100) 
             fig1.patch.set_facecolor("#0e1117")
-            ax1.pie([win_c, loss_c], labels=['Sukces', 'Brak'], autopct='%1.1f%%', colors=['#2e7d32', '#c62828'], startangle=90)
-            ax1.set_title(f"Skuteczność: {sel_strat}")
+            
+            # Kolory bardziej stonowane
+            colors = ['#4caf50', '#ef5350'] 
+            
+            ax1.pie([win_c, loss_c], labels=['Sukces', 'Brak'], autopct='%1.1f%%', 
+                    colors=colors, startangle=90, 
+                    textprops={'fontsize': 9, 'color': 'white'},
+                    explode=(0.02, 0)) # Lekkie wysunięcie
+            
+            ax1.set_title(f"Skuteczność: {sel_strat}", fontsize=11, pad=10)
             st.pyplot(fig1)
         
         with c_pie2:
@@ -192,13 +216,20 @@ if df_raw is not None and isinstance(df_raw, pl.DataFrame):
             if not time_hits.is_empty():
                 hours = ((time_hits[f"time_{k_key}"] / 60).floor().cast(pl.Int32) + 1).alias("hours_bucket")
                 counts = hours.value_counts().sort("hours_bucket")
-                fig2, ax2 = plt.subplots(figsize=(3, 3))
+                
+                fig2, ax2 = plt.subplots(figsize=(4, 4), dpi=100)
                 fig2.patch.set_facecolor("#0e1117")
-                ax2.pie(counts["count"], labels=[f"{int(h)}h" for h in counts["hours_bucket"]], autopct='%1.1f%%', startangle=140)
-                ax2.set_title(f"Czas powrotu: {sel_strat}")
+                
+                # Używamy zdefiniowanej funkcji clean_autopct żeby ukryć wartości < 3%
+                ax2.pie(counts["count"], labels=[f"{int(h)}h" for h in counts["hours_bucket"]], 
+                        autopct=clean_autopct, 
+                        startangle=140,
+                        textprops={'fontsize': 8, 'color': 'white', 'weight': 'light'})
+                
+                ax2.set_title(f"Czas powrotu: {sel_strat}", fontsize=11, pad=10)
                 st.pyplot(fig2)
 
-        # SZCZEGÓŁOWA TABELA
+        # TABELA
         st.divider()
         st.subheader(f"📋 Szczegółowa lista transakcji: {sel_strat}")
         
@@ -213,10 +244,8 @@ if df_raw is not None and isinstance(df_raw, pl.DataFrame):
         ]).sort("Data", descending=True)
         
         pdf_table = table_df.to_pandas()
-        
         pdf_table["Czas powrotu"] = pdf_table["mins_raw"].apply(format_minutes)
         pdf_table["Wynik"] = pdf_table["Wynik"].map({True: "✅ WIN", False: "❌ LOSS"})
-        
         pdf_table = pdf_table.drop(columns=["mins_raw"])
 
         st.dataframe(
