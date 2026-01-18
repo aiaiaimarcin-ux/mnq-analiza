@@ -1,0 +1,6 @@
+streamlit
+polars
+matplotlib
+pytz
+pyarrow
+zstandard
